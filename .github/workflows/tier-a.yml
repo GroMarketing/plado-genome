@@ -1,0 +1,39 @@
+name: tier-a-contracts
+# One-off / on-demand: read the declared MCP contracts of catalog servers in no-network containers.
+# No secrets are used or available. Never calls a tool. Triggered manually (workflow_dispatch).
+on:
+  workflow_dispatch:
+    inputs:
+      shards: { description: 'number of shards', default: '20' }
+      limit: { description: 'servers per shard (0 = all)', default: '0' }
+permissions:
+  contents: read
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        env: { SHARDS: '${{ inputs.shards }}' }
+        run: echo "matrix=$(node -e "const n=parseInt(process.env.SHARDS,10);if(!(n>0&&n<=50))process.exit(1);console.log(JSON.stringify([...Array(n).keys()]))")" >> "$GITHUB_OUTPUT"
+  probe:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: docker pull node:22-bookworm-slim && docker pull ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+      - env: { SHARD: '${{ matrix.shard }}', SHARDS: '${{ inputs.shards }}', LIMIT: '${{ inputs.limit }}' }
+        run: node probe/run-shard.mjs --shard "$SHARD" --of "$SHARDS" --limit "$LIMIT" --jobs 4
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: 'contracts-${{ matrix.shard }}', path: out/, retention-days: 30 }
